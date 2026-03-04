@@ -13,6 +13,13 @@ pyinstaller ^
     --add-data "src;src" ^
     run.py
 
+if errorlevel 1 (
+    echo.
+    echo ERROR: Build failed! See output above for details.
+    pause
+    exit /b 1
+)
+
 echo.
 echo Build complete. Executable is in dist\MultiBrowserOperator.exe
 pause

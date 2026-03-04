@@ -3,7 +3,7 @@
 import ctypes
 import ctypes.wintypes as wt
 
-from .winapi import user32, GWL_STYLE, WS_VISIBLE
+from .winapi import user32
 
 
 class WindowInfo:
@@ -29,7 +29,7 @@ class WindowInfo:
     def is_minimized(self) -> bool:
         return bool(user32.IsIconic(self.hwnd))
 
-    def get_client_rect(self) -> tuple[int, int, int, int]:
+    def get_client_rect(self) -> tuple:
         """Return (left, top, right, bottom) of client area in screen coords."""
         rect = wt.RECT()
         user32.GetClientRect(self.hwnd, ctypes.byref(rect))
@@ -39,23 +39,28 @@ class WindowInfo:
         user32.ClientToScreen(self.hwnd, ctypes.byref(pt_br))
         return pt_tl.x, pt_tl.y, pt_br.x, pt_br.y
 
-    def get_client_size(self) -> tuple[int, int]:
+    def get_client_size(self) -> tuple:
         """Return (width, height) of the client area."""
         rect = wt.RECT()
         user32.GetClientRect(self.hwnd, ctypes.byref(rect))
         return rect.right - rect.left, rect.bottom - rect.top
 
 
-def enumerate_windows(min_title_len: int = 1) -> list[WindowInfo]:
+def get_client_size(hwnd: int) -> tuple:
+    """Return (width, height) of a window's client area without creating WindowInfo."""
+    rect = wt.RECT()
+    user32.GetClientRect(hwnd, ctypes.byref(rect))
+    return rect.right - rect.left, rect.bottom - rect.top
+
+
+def enumerate_windows(min_title_len: int = 1) -> list:
     """Return a list of all visible top-level windows with a title."""
-    results: list[WindowInfo] = []
+    results = []
 
     @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
     def _enum_callback(hwnd, _lparam):
+        # IsWindowVisible checks both the window's own visibility and parent chain
         if not user32.IsWindowVisible(hwnd):
-            return True
-        style = user32.GetWindowLongW(hwnd, GWL_STYLE)
-        if not (style & WS_VISIBLE):
             return True
         length = user32.GetWindowTextLengthW(hwnd)
         if length < min_title_len:
@@ -79,14 +84,14 @@ def get_foreground_hwnd() -> int:
     return user32.GetForegroundWindow()
 
 
-def screen_to_client(hwnd: int, x: int, y: int) -> tuple[int, int]:
+def screen_to_client(hwnd: int, x: int, y: int) -> tuple:
     """Convert screen coordinates to client-area coordinates."""
     pt = wt.POINT(x, y)
     user32.ScreenToClient(hwnd, ctypes.byref(pt))
     return pt.x, pt.y
 
 
-def client_to_screen(hwnd: int, x: int, y: int) -> tuple[int, int]:
+def client_to_screen(hwnd: int, x: int, y: int) -> tuple:
     """Convert client-area coordinates to screen coordinates."""
     pt = wt.POINT(x, y)
     user32.ClientToScreen(hwnd, ctypes.byref(pt))

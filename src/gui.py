@@ -193,7 +193,10 @@ class MainWindow(QMainWindow):
     def _refresh_windows(self):
         self._windows = enumerate_windows()
         self._table.setRowCount(0)
-        own_hwnd = int(self.winId())
+        try:
+            own_hwnd = int(self.winId())
+        except Exception:
+            own_hwnd = 0
 
         for win in self._windows:
             # Skip our own window
@@ -202,9 +205,11 @@ class MainWindow(QMainWindow):
             row = self._table.rowCount()
             self._table.insertRow(row)
 
-            # Checkbox for slave selection
+            # Checkbox for slave selection — store the QCheckBox directly as
+            # a property on the container widget to avoid fragile findChild()
             chk = QCheckBox()
             chk_widget = QWidget()
+            chk_widget.setProperty("chk", chk)
             chk_layout = QHBoxLayout(chk_widget)
             chk_layout.addWidget(chk)
             chk_layout.setAlignment(Qt.AlignCenter)
@@ -245,16 +250,16 @@ class MainWindow(QMainWindow):
         # Uncheck the master from slaves if checked
         chk_widget = self._table.cellWidget(row, 0)
         if chk_widget:
-            chk = chk_widget.findChild(QCheckBox)
+            chk = chk_widget.property("chk")
             if chk:
                 chk.setChecked(False)
 
-    def _get_checked_slaves(self) -> list[int]:
+    def _get_checked_slaves(self) -> list:
         slaves = []
         for row in range(self._table.rowCount()):
             chk_widget = self._table.cellWidget(row, 0)
             if chk_widget:
-                chk = chk_widget.findChild(QCheckBox)
+                chk = chk_widget.property("chk")
                 if chk and chk.isChecked():
                     hwnd = self._table.item(row, 1).data(Qt.UserRole)
                     if hwnd != self._master_hwnd:
@@ -265,7 +270,7 @@ class MainWindow(QMainWindow):
         for row in range(self._table.rowCount()):
             chk_widget = self._table.cellWidget(row, 0)
             if chk_widget:
-                chk = chk_widget.findChild(QCheckBox)
+                chk = chk_widget.property("chk")
                 if chk:
                     hwnd = self._table.item(row, 1).data(Qt.UserRole)
                     if hwnd != self._master_hwnd or not checked:

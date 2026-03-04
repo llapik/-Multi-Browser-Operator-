@@ -1,5 +1,6 @@
 """Send input events to slave windows via PostMessage."""
 
+import ctypes
 import ctypes.wintypes as wt
 
 from .winapi import (
@@ -24,11 +25,23 @@ from .winapi import (
 )
 
 # Map mouse-down messages to the button-state flags for wParam
-_BUTTON_DOWN_STATE: dict[int, int] = {
+_BUTTON_DOWN_STATE = {
     WM_LBUTTONDOWN: MK_LBUTTON,
     WM_RBUTTONDOWN: MK_RBUTTON,
     WM_MBUTTONDOWN: MK_MBUTTON,
 }
+
+# Modifier virtual key codes that should not generate WM_CHAR
+_MODIFIER_VKS = frozenset({
+    0x10, 0x11, 0x12,  # VK_SHIFT, VK_CONTROL, VK_MENU (Alt)
+    0xA0, 0xA1,        # VK_LSHIFT, VK_RSHIFT
+    0xA2, 0xA3,        # VK_LCONTROL, VK_RCONTROL
+    0xA4, 0xA5,        # VK_LMENU, VK_RMENU
+    0x5B, 0x5C,        # VK_LWIN, VK_RWIN
+    0x14,              # VK_CAPITAL (Caps Lock)
+    0x90,              # VK_NUMLOCK
+    0x91,              # VK_SCROLL
+})
 
 
 class InputSender:
@@ -63,7 +76,8 @@ class InputSender:
             self._pressed_buttons &= ~MK_MBUTTON
 
         if msg_type == WM_MOUSEWHEEL:
-            wparam = MAKELPARAM(self._pressed_buttons, wheel_delta)
+            # wParam: LOWORD = button state, HIWORD = wheel delta (signed)
+            wparam = MAKELPARAM(self._pressed_buttons, wheel_delta & 0xFFFF)
         elif msg_type in (WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP,
                           WM_RBUTTONDOWN, WM_RBUTTONUP,
                           WM_MBUTTONDOWN, WM_MBUTTONUP):
@@ -109,9 +123,20 @@ class InputSender:
 
         user32.PostMessageW(hwnd, msg_type, vk_code, lparam)
 
-        # Also send WM_CHAR for keydown of printable characters
-        if msg_type == WM_KEYDOWN and 0x20 <= vk_code <= 0x7E:
-            user32.PostMessageW(hwnd, WM_CHAR, vk_code, lparam)
+        # Send WM_CHAR for keydown events to support text input in form fields.
+        # Uses ToUnicode to correctly handle international keyboard layouts.
+        if msg_type == WM_KEYDOWN and vk_code not in _MODIFIER_VKS:
+            self._send_wm_char(hwnd, vk_code, scan_code, lparam)
+
+    def _send_wm_char(self, hwnd: int, vk_code: int, scan_code: int, lparam: int):
+        """Translate a virtual key to Unicode character(s) and send WM_CHAR."""
+        kbd_state = (ctypes.c_ubyte * 256)()
+        user32.GetKeyboardState(ctypes.byref(kbd_state))
+        buf = ctypes.create_unicode_buffer(8)
+        ret = user32.ToUnicode(vk_code, scan_code, ctypes.byref(kbd_state), buf, 8, 0)
+        if ret > 0:
+            for i in range(ret):
+                user32.PostMessageW(hwnd, WM_CHAR, ord(buf[i]), lparam)
 
     def reset(self):
         """Reset tracked button state."""

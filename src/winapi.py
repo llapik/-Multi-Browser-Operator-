@@ -7,6 +7,12 @@ user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
 # --- Window message constants ---
+WM_QUIT = 0x0012
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
+WM_CHAR = 0x0102
+WM_SYSKEYDOWN = 0x0104
+WM_SYSKEYUP = 0x0105
 WM_MOUSEMOVE = 0x0200
 WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONUP = 0x0202
@@ -15,11 +21,6 @@ WM_RBUTTONUP = 0x0205
 WM_MBUTTONDOWN = 0x0207
 WM_MBUTTONUP = 0x0208
 WM_MOUSEWHEEL = 0x020A
-WM_KEYDOWN = 0x0100
-WM_KEYUP = 0x0101
-WM_CHAR = 0x0102
-WM_SYSKEYDOWN = 0x0104
-WM_SYSKEYUP = 0x0105
 
 # --- Hook constants ---
 WH_MOUSE_LL = 14
@@ -41,6 +42,10 @@ VK_CONTROL = 0x11
 VK_MENU = 0x12  # Alt
 
 # --- Structures ---
+# ULONG_PTR is a pointer-sized unsigned integer (4 bytes on x86, 8 bytes on x64).
+# ctypes.c_size_t matches this on both architectures.
+ULONG_PTR = ctypes.c_size_t
+
 
 class MSLLHOOKSTRUCT(ctypes.Structure):
     _fields_ = [
@@ -48,7 +53,7 @@ class MSLLHOOKSTRUCT(ctypes.Structure):
         ("mouseData", wt.DWORD),
         ("flags", wt.DWORD),
         ("time", wt.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+        ("dwExtraInfo", ULONG_PTR),
     ]
 
 
@@ -58,7 +63,7 @@ class KBDLLHOOKSTRUCT(ctypes.Structure):
         ("scanCode", wt.DWORD),
         ("flags", wt.DWORD),
         ("time", wt.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+        ("dwExtraInfo", ULONG_PTR),
     ]
 
 
@@ -145,6 +150,23 @@ kernel32.GetModuleHandleW.restype = wt.HMODULE
 kernel32.GetCurrentThreadId.argtypes = []
 kernel32.GetCurrentThreadId.restype = wt.DWORD
 
+# Keyboard translation (for WM_CHAR generation with international layouts)
+user32.GetKeyboardState.argtypes = [ctypes.POINTER(ctypes.c_ubyte * 256)]
+user32.GetKeyboardState.restype = wt.BOOL
+
+user32.ToUnicode.argtypes = [
+    wt.UINT,          # wVirtKey
+    wt.UINT,          # wScanCode
+    ctypes.POINTER(ctypes.c_ubyte * 256),  # lpKeyState
+    wt.LPWSTR,        # pwszBuff
+    ctypes.c_int,     # cchBuff
+    wt.UINT,          # wFlags
+]
+user32.ToUnicode.restype = ctypes.c_int
+
+user32.MapVirtualKeyW.argtypes = [wt.UINT, wt.UINT]
+user32.MapVirtualKeyW.restype = wt.UINT
+
 
 def MAKELPARAM(low, high):
     """Pack two 16-bit values into a 32-bit LPARAM."""
@@ -158,4 +180,4 @@ def GET_WHEEL_DELTA(wparam):
 
 def HIWORD(dword):
     """Extract high 16-bit word (signed)."""
-    return ctypes.c_short((dword >> 16) & 0xFFFF).value
+    return ctypes.c_short(((dword & 0xFFFFFFFF) >> 16) & 0xFFFF).value
