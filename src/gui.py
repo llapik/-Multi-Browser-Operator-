@@ -60,6 +60,7 @@ class MainWindow(QMainWindow):
         self._config = load_config()
         self._windows: list = []
         self._master_hwnd: Optional[int] = None
+        self._last_dead_removed: int = 0  # tracks engine's dead-slave counter
 
         self._init_ui()
         self._init_tray()
@@ -363,6 +364,8 @@ class MainWindow(QMainWindow):
             self._btn_pause.setEnabled(False)
             self._btn_refresh.setEnabled(True)
             self._lbl_status.setText("Остановлено")
+            self._lbl_status.setStyleSheet("")
+            self._last_dead_removed = 0
         else:
             if self._master_hwnd is None:
                 QMessageBox.warning(self, "Ошибка",
@@ -441,6 +444,31 @@ class MainWindow(QMainWindow):
 
     def _update_status(self):
         self._lbl_events.setText(f"Событий: {self._engine.events_sent}")
+
+        if not self._engine.is_active:
+            return
+
+        # Warn if the master window was destroyed while sync is running
+        if self._master_hwnd is not None and not self._engine.is_master_valid():
+            self._lbl_status.setText("⚠ Ведущее окно закрыто! Остановите синхронизацию.")
+            self._lbl_status.setStyleSheet("color: #c62828; font-weight: bold;")
+            return
+
+        # Warn when dead slave HWNDs were auto-purged
+        dead = self._engine.dead_removed
+        if dead != self._last_dead_removed:
+            newly_purged = dead - self._last_dead_removed
+            self._last_dead_removed = dead
+            remaining = self._engine.slave_count()
+            self._statusbar.showMessage(
+                f"⚠ Удалено {newly_purged} закрытых slave-окон "
+                f"(осталось {remaining}). Нажмите «Обновить» для повторного выбора.",
+                6000,
+            )
+            # If all slaves are gone, stop automatically
+            if remaining == 0:
+                self._toggle_sync()
+                self._lbl_status.setStyleSheet("")
 
     # --- Tray ---
 
