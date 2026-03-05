@@ -5,6 +5,9 @@ from typing import Optional
 
 from .winapi import (
     user32,
+    WM_ACTIVATE,
+    WM_SETFOCUS,
+    WA_ACTIVE,
     WM_MOUSEMOVE,
     WM_LBUTTONDOWN,
     WM_LBUTTONUP,
@@ -20,7 +23,7 @@ from .winapi import (
 )
 from .hooks import InputHooks
 from .sender import InputSender
-from .window_manager import screen_to_client, get_client_size
+from .window_manager import screen_to_client, get_client_size, find_input_child
 
 MOUSE_EVENTS = frozenset({
     WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP,
@@ -36,6 +39,32 @@ class SyncEngine:
 
     Captures input from the master window and replicates it to slave windows.
     Supports proportional coordinate scaling when windows differ in size.
+
+    Background-window activation
+    ----------------------------
+    Modern browsers (Chrome, Edge, Firefox) only process PostMessage-based
+    input when their window believes it has focus.  When the master is in the
+    foreground all slave windows are in the background, so Chrome silently
+    drops our WM_KEYDOWN / WM_LBUTTONDOWN messages.
+
+    Fix: every time the master window *transitions into* the foreground we
+    send each slave:
+        PostMessage(top_level,     WM_ACTIVATE, WA_ACTIVE, 0)
+        PostMessage(focused_child, WM_SETFOCUS, 0, 0)
+
+    The focused child is found via GetGUIThreadInfo() — it returns the
+    per-thread focus state of the slave's UI thread, independent of which
+    window the OS considers the foreground.  For Chromium browsers this is
+    typically Chrome_RenderWidgetHostHWND.
+
+    After receiving WM_ACTIVATE + WM_SETFOCUS, Chrome sets is_active_ = true
+    in its view hierarchy and starts processing subsequent PostMessage input.
+
+    Keyboard events are routed directly to the focused child (find_input_child)
+    because Chrome's render widget processes WM_KEYDOWN at the child level.
+    Mouse events go to the top-level HWND — Chrome routes them internally
+    via its own hit-testing, and coordinates stay relative to the top-level
+    client area, avoiding nested-child coordinate conversion complexity.
     """
 
     def __init__(self):
@@ -51,8 +80,10 @@ class SyncEngine:
 
         self._events_sent: int = 0
         # Count of slave HWNDs auto-removed because the window was destroyed.
-        # GUI reads this to show a warning.
         self._dead_removed: int = 0
+        # Tracks whether master was in foreground on the last event.
+        # When this transitions False → True we (re-)activate all slaves.
+        self._master_was_fg: bool = False
 
     # ------------------------------------------------------------------
     # Properties
@@ -64,7 +95,6 @@ class SyncEngine:
 
     @property
     def dead_removed(self) -> int:
-        """Total dead slave HWNDs auto-purged since last start()."""
         return self._dead_removed
 
     @property
@@ -96,7 +126,6 @@ class SyncEngine:
             return self._master_hwnd
 
     def is_master_valid(self) -> bool:
-        """Return True if the master HWND is set and the window still exists."""
         with self._lock:
             m = self._master_hwnd
         return m is not None and bool(user32.IsWindow(m))
@@ -104,6 +133,8 @@ class SyncEngine:
     def set_slaves(self, hwnds: list) -> None:
         with self._lock:
             self._slave_hwnds = list(hwnds)
+        # New slave list → force re-activation on next foreground event
+        self._master_was_fg = False
 
     def get_slaves(self) -> list:
         with self._lock:
@@ -124,6 +155,7 @@ class SyncEngine:
         self._paused = False
         self._events_sent = 0
         self._dead_removed = 0
+        self._master_was_fg = False  # triggers activation on first fg event
         self._sender.reset()
         self._hooks.on_mouse = self._on_mouse
         self._hooks.on_keyboard = self._on_keyboard
@@ -137,6 +169,7 @@ class SyncEngine:
         self._hooks.on_keyboard = None
         self._hooks.stop()
         self._sender.reset()
+        self._master_was_fg = False
 
     def pause(self) -> None:
         with self._lock:
@@ -159,21 +192,15 @@ class SyncEngine:
 
     def _on_mouse(self, msg_type: int, screen_x: int, screen_y: int,
                   mouse_data: int) -> None:
-        # ---------------------------------------------------------------
-        # ALWAYS update button state, even when paused or out of focus.
-        # If a button is released outside the master (e.g. user alt-tabs),
-        # _pressed must reflect that release so the next wParam is correct.
-        # Without this, slaves permanently believe a button is held down,
-        # causing phantom drags and click failures ("stuck button" desync).
-        # ---------------------------------------------------------------
+        # Always track button state regardless of focus.
+        # If a button is released outside master the state must still update
+        # so the next wParam sent to slaves is correct (no "phantom held button").
         self._sender.update_buttons(msg_type)
 
         if msg_type not in MOUSE_EVENTS:
             return
 
-        # Single lock acquisition — ensures master + slave list are a
-        # consistent snapshot.  Previously two separate acquisitions allowed
-        # the GUI thread to change state between reads.
+        # Single lock — consistent snapshot of paused + master + slave list.
         with self._lock:
             if self._paused:
                 return
@@ -183,8 +210,16 @@ class SyncEngine:
         if master is None or not user32.IsWindow(master):
             return
 
-        if user32.GetForegroundWindow() != master:
+        fg = user32.GetForegroundWindow()
+        if fg != master:
+            self._master_was_fg = False
             return
+
+        # Master just gained foreground → re-activate all background slaves
+        # so Chrome/Edge start processing our PostMessage input.
+        if not self._master_was_fg:
+            self._master_was_fg = True
+            self._activate_slaves(slaves)
 
         client_x, client_y = screen_to_client(master, screen_x, screen_y)
 
@@ -203,6 +238,7 @@ class SyncEngine:
                 if user32.IsIconic(hwnd):
                     continue
                 sw, sh = get_client_size(hwnd)
+                # Mouse → top-level HWND, coordinates relative to its client area
                 self._sender.send_mouse(hwnd, msg_type,
                                         int(rel_x * sw), int(rel_y * sh),
                                         mouse_data)
@@ -235,8 +271,14 @@ class SyncEngine:
         if master is None or not user32.IsWindow(master):
             return
 
-        if user32.GetForegroundWindow() != master:
+        fg = user32.GetForegroundWindow()
+        if fg != master:
+            self._master_was_fg = False
             return
+
+        if not self._master_was_fg:
+            self._master_was_fg = True
+            self._activate_slaves(slaves)
 
         dead: list = []
 
@@ -246,7 +288,12 @@ class SyncEngine:
                 continue
             if user32.IsIconic(hwnd):
                 continue
-            self._sender.send_key(hwnd, msg_type, vk_code, scan_code, flags)
+            # Keyboard → route to the focused child window (e.g. render widget).
+            # Chrome_RenderWidgetHostHWND processes WM_KEYDOWN at the child level;
+            # posting to the top-level HWND may be silently dropped when the
+            # browser is in the background.
+            target = find_input_child(hwnd)
+            self._sender.send_key(target, msg_type, vk_code, scan_code, flags)
             self._events_sent += 1
 
         if dead:
@@ -256,12 +303,27 @@ class SyncEngine:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _purge_dead_slaves(self, dead: list) -> None:
-        """Remove destroyed window handles from the slave list.
+    def _activate_slaves(self, slaves: list) -> None:
+        """Tell each slave window to accept input as if it were focused.
 
-        Windows can recycle HWNDs: a dead handle might be re-assigned to a
-        completely different window.  Keeping dead handles would send mouse/
-        keyboard events to the wrong application.
+        Sends WM_ACTIVATE (makes Chrome set is_active_ = true) and
+        WM_SETFOCUS to the focused child (found via GetGUIThreadInfo).
+        Called once per master-foreground transition, not per event.
+        """
+        for hwnd in slaves:
+            if not user32.IsWindow(hwnd) or user32.IsIconic(hwnd):
+                continue
+            # 1. Tell the top-level window it is being activated
+            user32.PostMessageW(hwnd, WM_ACTIVATE, WA_ACTIVE, 0)
+            # 2. Tell the focused child it has keyboard focus
+            target = find_input_child(hwnd)
+            user32.PostMessageW(target, WM_SETFOCUS, 0, 0)
+
+    def _purge_dead_slaves(self, dead: list) -> None:
+        """Remove destroyed HWNDs from the slave list.
+
+        Windows recycles HWNDs: a dead handle can be reassigned to a different
+        window.  Keeping it would send events to the wrong application.
         """
         with self._lock:
             for hwnd in dead:
@@ -269,4 +331,4 @@ class SyncEngine:
                     self._slave_hwnds.remove(hwnd)
                     self._dead_removed += 1
                 except ValueError:
-                    pass  # already removed by a concurrent call
+                    pass

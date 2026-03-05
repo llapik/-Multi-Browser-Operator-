@@ -8,6 +8,9 @@ kernel32 = ctypes.windll.kernel32
 
 # --- Window message constants ---
 WM_QUIT = 0x0012
+WM_ACTIVATE = 0x0006      # wParam: WA_ACTIVE / WA_INACTIVE
+WM_SETFOCUS = 0x0007      # sent to window gaining keyboard focus
+WM_KILLFOCUS = 0x0008     # sent to window losing keyboard focus
 WM_KEYDOWN = 0x0100
 WM_KEYUP = 0x0101
 WM_CHAR = 0x0102
@@ -21,6 +24,10 @@ WM_RBUTTONUP = 0x0205
 WM_MBUTTONDOWN = 0x0207
 WM_MBUTTONUP = 0x0208
 WM_MOUSEWHEEL = 0x020A
+
+# WM_ACTIVATE wParam values
+WA_INACTIVE = 0
+WA_ACTIVE = 1
 
 # --- Hook constants ---
 WH_MOUSE_LL = 14
@@ -162,6 +169,25 @@ user32.GetKeyState.restype = ctypes.c_short
 # ignoring modifier keys; high bit set if dead key.
 user32.MapVirtualKeyW.argtypes = [wt.UINT, wt.UINT]
 user32.MapVirtualKeyW.restype = wt.UINT
+
+# GetGUIThreadInfo — returns GUI focus/capture state for any thread.
+# Used to find the focused child window inside a background browser process
+# (e.g. Chrome_RenderWidgetHostHWND) so keyboard events reach the right target.
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize",      wt.DWORD),
+        ("flags",       wt.DWORD),
+        ("hwndActive",  wt.HWND),
+        ("hwndFocus",   wt.HWND),   # <-- child that has keyboard focus
+        ("hwndCapture", wt.HWND),
+        ("hwndMenuOwner", wt.HWND),
+        ("hwndMoveSize",  wt.HWND),
+        ("hwndCaret",   wt.HWND),
+        ("rcCaret",     wt.RECT),
+    ]
+
+user32.GetGUIThreadInfo.argtypes = [wt.DWORD, ctypes.POINTER(GUITHREADINFO)]
+user32.GetGUIThreadInfo.restype = wt.BOOL
 
 
 def MAKELPARAM(low, high):

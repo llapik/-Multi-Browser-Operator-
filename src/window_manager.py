@@ -3,7 +3,7 @@
 import ctypes
 import ctypes.wintypes as wt
 
-from .winapi import user32
+from .winapi import user32, GUITHREADINFO
 
 
 class WindowInfo:
@@ -96,3 +96,33 @@ def client_to_screen(hwnd: int, x: int, y: int) -> tuple:
     pt = wt.POINT(x, y)
     user32.ClientToScreen(hwnd, ctypes.byref(pt))
     return pt.x, pt.y
+
+
+def find_input_child(hwnd: int) -> int:
+    """Return the child window that should receive keyboard input for hwnd.
+
+    Modern browsers (Chrome, Edge, Firefox) use a multi-process architecture
+    where the actual input-handling window is a deeply nested child
+    (e.g. Chrome_RenderWidgetHostHWND), not the top-level HWND.
+
+    When a browser is in the background its Windows focus chain is inactive,
+    but the browser's own GUI thread still tracks which child had focus last.
+    GetGUIThreadInfo() exposes that per-thread focus state, letting us
+    address the right child even for windows that are not in the foreground.
+
+    Returns hwnd unchanged if no suitable child is found.
+    """
+    pid = wt.DWORD()
+    thread_id = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if not thread_id:
+        return hwnd
+
+    gti = GUITHREADINFO()
+    gti.cbSize = ctypes.sizeof(GUITHREADINFO)
+    if user32.GetGUIThreadInfo(thread_id, ctypes.byref(gti)):
+        focus = gti.hwndFocus
+        # Accept any child that is a real window and different from the top-level
+        if focus and focus != hwnd and user32.IsWindow(focus):
+            return focus
+
+    return hwnd
