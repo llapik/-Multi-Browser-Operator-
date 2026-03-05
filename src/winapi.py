@@ -39,7 +39,8 @@ WS_MINIMIZE = 0x20000000
 # --- Virtual key codes ---
 VK_SHIFT = 0x10
 VK_CONTROL = 0x11
-VK_MENU = 0x12  # Alt
+VK_MENU = 0x12   # Alt
+VK_CAPITAL = 0x14  # Caps Lock
 
 # --- Structures ---
 # ULONG_PTR is a pointer-sized unsigned integer (4 bytes on x86, 8 bytes on x64).
@@ -126,10 +127,10 @@ user32.ScreenToClient.restype = wt.BOOL
 user32.GetForegroundWindow.argtypes = []
 user32.GetForegroundWindow.restype = wt.HWND
 
-user32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+user32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.WPARAM]
 user32.PostMessageW.restype = wt.BOOL
 
-user32.SendMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+user32.SendMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.WPARAM]
 user32.SendMessageW.restype = wt.LONG
 
 user32.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
@@ -150,26 +151,21 @@ kernel32.GetModuleHandleW.restype = wt.HMODULE
 kernel32.GetCurrentThreadId.argtypes = []
 kernel32.GetCurrentThreadId.restype = wt.DWORD
 
-# Keyboard translation (for WM_CHAR generation with international layouts)
-user32.GetKeyboardState.argtypes = [ctypes.POINTER(ctypes.c_ubyte * 256)]
-user32.GetKeyboardState.restype = wt.BOOL
+# Keyboard state — GetKeyState returns the state of a key at message-processing time.
+# HIGH bit (bit 15) set = key is down. Bit 0 = toggled state (Caps Lock etc.).
+# Returns SHORT (signed 16-bit).
+user32.GetKeyState.argtypes = [ctypes.c_int]
+user32.GetKeyState.restype = ctypes.c_short
 
-user32.ToUnicode.argtypes = [
-    wt.UINT,          # wVirtKey
-    wt.UINT,          # wScanCode
-    ctypes.POINTER(ctypes.c_ubyte * 256),  # lpKeyState
-    wt.LPWSTR,        # pwszBuff
-    ctypes.c_int,     # cchBuff
-    wt.UINT,          # wFlags
-]
-user32.ToUnicode.restype = ctypes.c_int
-
+# MapVirtualKeyW: translate virtual key code ↔ scan code ↔ character value.
+# MAPVK_VK_TO_CHAR (=2): return the Unicode character produced by the key
+# ignoring modifier keys; high bit set if dead key.
 user32.MapVirtualKeyW.argtypes = [wt.UINT, wt.UINT]
 user32.MapVirtualKeyW.restype = wt.UINT
 
 
 def MAKELPARAM(low, high):
-    """Pack two 16-bit values into a 32-bit LPARAM."""
+    """Pack two 16-bit values into a 32-bit LPARAM (unsigned)."""
     return (high & 0xFFFF) << 16 | (low & 0xFFFF)
 
 
