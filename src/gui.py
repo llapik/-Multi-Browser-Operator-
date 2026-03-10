@@ -61,6 +61,7 @@ class MainWindow(QMainWindow):
         self._windows: list = []
         self._master_hwnd: Optional[int] = None
         self._last_dead_removed: int = 0  # tracks engine's dead-slave counter
+        self._status_tick: int = 0         # incremented each timer tick (500ms)
 
         self._init_ui()
         self._init_tray()
@@ -443,7 +444,12 @@ class MainWindow(QMainWindow):
     # --- Status ---
 
     def _update_status(self):
+        self._status_tick += 1
         self._lbl_events.setText(f"Событий: {self._engine.events_sent}")
+
+        # Refresh target cache every ~2 seconds (4 ticks × 500ms timer)
+        if self._status_tick % 4 == 0:
+            self._engine.refresh_target_cache()
 
         if not self._engine.is_active:
             return

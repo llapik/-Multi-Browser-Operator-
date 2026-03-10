@@ -25,6 +25,10 @@ from .hooks import InputHooks
 from .sender import InputSender
 from .window_manager import screen_to_client, get_client_size, find_input_child
 
+# How many WM_MOUSEMOVE events to skip between sends (0 = no throttle, 1 = every other, etc.)
+# Avoids overflowing slave message queues when many windows are running.
+_MOUSEMOVE_SKIP = 1
+
 MOUSE_EVENTS = frozenset({
     WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_RBUTTONDOWN, WM_RBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
@@ -85,6 +89,14 @@ class SyncEngine:
         # When this transitions False → True we (re-)activate all slaves.
         self._master_was_fg: bool = False
 
+        # Target cache: hwnd → focused child HWND for keyboard events.
+        # Pre-computed outside hook thread to avoid expensive IPC per keystroke.
+        self._target_cache: dict = {}
+        self._cache_lock = threading.Lock()
+
+        # WM_MOUSEMOVE throttle counter (per-engine, not per-slave).
+        self._mousemove_skip_count: int = 0
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -135,6 +147,8 @@ class SyncEngine:
             self._slave_hwnds = list(hwnds)
         # New slave list → force re-activation on next foreground event
         self._master_was_fg = False
+        # Rebuild target cache asynchronously so the hook thread has fresh data
+        threading.Thread(target=self._rebuild_target_cache, daemon=True).start()
 
     def get_slaves(self) -> list:
         with self._lock:
@@ -156,7 +170,10 @@ class SyncEngine:
         self._events_sent = 0
         self._dead_removed = 0
         self._master_was_fg = False  # triggers activation on first fg event
+        self._mousemove_skip_count = 0
         self._sender.reset()
+        # Pre-build target cache before hooks start so first keystroke is cached
+        threading.Thread(target=self._rebuild_target_cache, daemon=True).start()
         self._hooks.on_mouse = self._on_mouse
         self._hooks.on_keyboard = self._on_keyboard
         self._hooks.start()
@@ -170,6 +187,8 @@ class SyncEngine:
         self._hooks.stop()
         self._sender.reset()
         self._master_was_fg = False
+        with self._cache_lock:
+            self._target_cache.clear()
 
     def pause(self) -> None:
         with self._lock:
@@ -199,6 +218,13 @@ class SyncEngine:
 
         if msg_type not in MOUSE_EVENTS:
             return
+
+        # Throttle WM_MOUSEMOVE: skip every other event to prevent slave message
+        # queue overflow when running 10+ windows (each move → N PostMessages).
+        if msg_type == WM_MOUSEMOVE:
+            self._mousemove_skip_count += 1
+            if self._mousemove_skip_count % (_MOUSEMOVE_SKIP + 1) != 0:
+                return
 
         # Single lock — consistent snapshot of paused + master + slave list.
         with self._lock:
@@ -289,10 +315,8 @@ class SyncEngine:
             if user32.IsIconic(hwnd):
                 continue
             # Keyboard → route to the focused child window (e.g. render widget).
-            # Chrome_RenderWidgetHostHWND processes WM_KEYDOWN at the child level;
-            # posting to the top-level HWND may be silently dropped when the
-            # browser is in the background.
-            target = find_input_child(hwnd)
+            # Use pre-computed cache to avoid expensive IPC in the hook hot-path.
+            target = self._get_target(hwnd)
             self._sender.send_key(target, msg_type, vk_code, scan_code, flags)
             self._events_sent += 1
 
@@ -309,18 +333,53 @@ class SyncEngine:
         Sends WM_ACTIVATE (makes Chrome set is_active_ = true) and
         WM_SETFOCUS to the focused child (found via GetGUIThreadInfo).
         Called once per master-foreground transition, not per event.
+        Schedules an async cache rebuild after activation so subsequent
+        keystrokes use freshly resolved child targets.
         """
         for hwnd in slaves:
             if not user32.IsWindow(hwnd) or user32.IsIconic(hwnd):
                 continue
             # 1. Tell the top-level window it is being activated
             user32.PostMessageW(hwnd, WM_ACTIVATE, WA_ACTIVE, 0)
-            # 2. Tell the focused child it has keyboard focus
-            target = find_input_child(hwnd)
+            # 2. Tell the focused child it has keyboard focus (use cached target)
+            target = self._get_target(hwnd)
             user32.PostMessageW(target, WM_SETFOCUS, 0, 0)
+        # Rebuild cache ~500ms after activation to pick up newly focused children
+        threading.Timer(0.5, self._rebuild_target_cache).start()
+
+    def _rebuild_target_cache(self) -> None:
+        """Pre-compute hwnd→child mappings for all current slaves.
+
+        Calls find_input_child (GetGUIThreadInfo + optional EnumChildWindows)
+        for each slave outside the hook thread so the hook callback can do
+        an O(1) dict lookup instead of expensive per-keystroke IPC.
+        """
+        with self._lock:
+            slaves = list(self._slave_hwnds)
+
+        new_cache = {}
+        for hwnd in slaves:
+            if user32.IsWindow(hwnd):
+                new_cache[hwnd] = find_input_child(hwnd)
+
+        with self._cache_lock:
+            self._target_cache = new_cache
+
+    def _get_target(self, hwnd: int) -> int:
+        """O(1) cache lookup for the keyboard-input child of hwnd.
+
+        Falls back to hwnd itself if no entry in cache (e.g. newly added slave).
+        """
+        with self._cache_lock:
+            return self._target_cache.get(hwnd, hwnd)
+
+    def refresh_target_cache(self) -> None:
+        """Public method for GUI timer to trigger periodic cache rebuilds."""
+        if self._active:
+            threading.Thread(target=self._rebuild_target_cache, daemon=True).start()
 
     def _purge_dead_slaves(self, dead: list) -> None:
-        """Remove destroyed HWNDs from the slave list.
+        """Remove destroyed HWNDs from the slave list and target cache.
 
         Windows recycles HWNDs: a dead handle can be reassigned to a different
         window.  Keeping it would send events to the wrong application.
@@ -332,3 +391,6 @@ class SyncEngine:
                     self._dead_removed += 1
                 except ValueError:
                     pass
+        with self._cache_lock:
+            for hwnd in dead:
+                self._target_cache.pop(hwnd, None)

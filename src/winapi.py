@@ -107,6 +107,9 @@ user32.PostThreadMessageW.restype = wt.BOOL
 user32.EnumWindows.argtypes = [ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM), wt.LPARAM]
 user32.EnumWindows.restype = wt.BOOL
 
+user32.EnumChildWindows.argtypes = [wt.HWND, ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM), wt.LPARAM]
+user32.EnumChildWindows.restype = wt.BOOL
+
 user32.GetWindowTextW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
 user32.GetWindowTextW.restype = ctypes.c_int
 
