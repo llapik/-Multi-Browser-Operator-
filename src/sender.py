@@ -6,6 +6,9 @@ import ctypes.wintypes as wt
 from .winapi import (
     user32,
     MAKELPARAM,
+    WM_ACTIVATE,
+    WM_SETFOCUS,
+    WA_ACTIVE,
     WM_MOUSEMOVE,
     WM_LBUTTONDOWN,
     WM_LBUTTONUP,
@@ -117,6 +120,15 @@ class InputSender:
         """Send a mouse event to hwnd using the current button state.
 
         Caller must have called update_buttons(msg_type) beforehand.
+
+        For click and scroll events we insert WM_ACTIVATE(WA_ACTIVE) immediately
+        before the event in the message queue.  This is critical when several
+        Chrome windows share the same browser process (and thus the same UI
+        thread / message queue): a single WM_ACTIVATE sent at session-start is
+        overridden by subsequent activations.  By interleaving ACTIVATE + event
+        for each slave individually, each slave is active when its click arrives.
+        WM_MOUSEMOVE is excluded — hover effects don't need the window to be
+        active and the extra messages would overflow the queue.
         """
         if not user32.IsWindow(hwnd):
             return
@@ -129,11 +141,24 @@ class InputSender:
         else:
             wparam = self._pressed
 
+        # Re-activate before every click/scroll so background Chrome windows
+        # process the event even when multiple slaves share one browser process.
+        if msg_type != WM_MOUSEMOVE:
+            user32.PostMessageW(hwnd, WM_ACTIVATE, WA_ACTIVE, 0)
+
         user32.PostMessageW(hwnd, msg_type, wparam, lparam)
 
     def send_key(self, hwnd: int, msg_type: int, vk_code: int, scan_code: int,
                  flags: int = 0) -> None:
-        """Send a keyboard event to hwnd."""
+        """Send a keyboard event to hwnd.
+
+        WM_SETFOCUS is posted immediately before WM_KEYDOWN in the same message
+        queue.  This ensures the target window (Chrome_RenderWidgetHostHWND) has
+        focus when the key arrives, even when multiple Chrome windows belonging
+        to the same browser process share one UI thread.  Without this, a bulk
+        WM_SETFOCUS sent at activation time is immediately overridden by the next
+        slave's activation, leaving only the last slave with focus.
+        """
         if not user32.IsWindow(hwnd):
             return
 
@@ -159,6 +184,11 @@ class InputSender:
             | ((1 << 30) if is_up else 0)
             | ((1 << 31) if is_up else 0)
         ).value
+
+        # Re-focus before every keydown so this render widget processes the key
+        # even if another slave's render widget was focused by a prior SETFOCUS.
+        if msg_type in (WM_KEYDOWN, WM_SYSKEYDOWN):
+            user32.PostMessageW(hwnd, WM_SETFOCUS, 0, 0)
 
         user32.PostMessageW(hwnd, msg_type, vk_code, lparam)
 
