@@ -3,7 +3,7 @@
 import ctypes
 import ctypes.wintypes as wt
 
-from .winapi import user32
+from .winapi import user32, GUITHREADINFO
 
 
 class WindowInfo:
@@ -96,3 +96,74 @@ def client_to_screen(hwnd: int, x: int, y: int) -> tuple:
     pt = wt.POINT(x, y)
     user32.ClientToScreen(hwnd, ctypes.byref(pt))
     return pt.x, pt.y
+
+
+# Class names used by Chromium and Firefox for their input render widgets.
+# These are the windows that actually process WM_KEYDOWN in background tabs.
+_RENDER_WIDGET_CLASSES = frozenset({
+    'Chrome_RenderWidgetHostHWND',
+    'Chrome_ChildContentWnd',
+    'MozillaCompositorWindowClass',
+})
+
+
+def _find_render_widget(hwnd: int) -> int:
+    """Search child windows for a known browser render-widget class.
+
+    Used as a fallback when GetGUIThreadInfo returns hwndFocus=NULL
+    (e.g. cold-start browser that has never received a click).
+
+    Returns the first matching child HWND, or 0 if none found.
+    """
+    found = [0]
+
+    @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+    def _callback(child_hwnd, _lparam):
+        cls_buf = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(child_hwnd, cls_buf, 64)
+        if cls_buf.value in _RENDER_WIDGET_CLASSES:
+            found[0] = child_hwnd
+            return False  # stop enumeration
+        return True  # continue
+
+    user32.EnumChildWindows(hwnd, _callback, 0)
+    return found[0]
+
+
+def find_input_child(hwnd: int) -> int:
+    """Return the child window that should receive keyboard input for hwnd.
+
+    Modern browsers (Chrome, Edge, Firefox) use a multi-process architecture
+    where the actual input-handling window is a deeply nested child
+    (e.g. Chrome_RenderWidgetHostHWND), not the top-level HWND.
+
+    When a browser is in the background its Windows focus chain is inactive,
+    but the browser's own GUI thread still tracks which child had focus last.
+    GetGUIThreadInfo() exposes that per-thread focus state, letting us
+    address the right child even for windows that are not in the foreground.
+
+    Falls back to EnumChildWindows class-name search for cold-start windows
+    where hwndFocus is NULL (browser opened but never interacted with).
+
+    Returns hwnd unchanged if no suitable child is found.
+    """
+    pid = wt.DWORD()
+    thread_id = user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if not thread_id:
+        return hwnd
+
+    gti = GUITHREADINFO()
+    gti.cbSize = ctypes.sizeof(GUITHREADINFO)
+    if user32.GetGUIThreadInfo(thread_id, ctypes.byref(gti)):
+        focus = gti.hwndFocus
+        # Accept any child that is a real window and different from the top-level
+        if focus and focus != hwnd and user32.IsWindow(focus):
+            return focus
+
+    # Fallback: enumerate children looking for known render-widget class names.
+    # Handles cold-start browsers that have never received a click/focus event.
+    widget = _find_render_widget(hwnd)
+    if widget:
+        return widget
+
+    return hwnd
