@@ -264,8 +264,9 @@ class SyncEngine:
                 if user32.IsIconic(hwnd):
                     continue
                 sw, sh = get_client_size(hwnd)
-                # Mouse → top-level HWND, coordinates relative to its client area
-                self._sender.send_mouse(hwnd, msg_type,
+                # Scroll → render widget (same as keyboard); other mouse → top-level
+                target = self._get_target(hwnd) if msg_type == WM_MOUSEWHEEL else hwnd
+                self._sender.send_mouse(target, msg_type,
                                         int(rel_x * sw), int(rel_y * sh),
                                         mouse_data)
                 self._events_sent += 1
@@ -276,7 +277,9 @@ class SyncEngine:
                     continue
                 if user32.IsIconic(hwnd):
                     continue
-                self._sender.send_mouse(hwnd, msg_type,
+                # Scroll → render widget (same as keyboard); other mouse → top-level
+                target = self._get_target(hwnd) if msg_type == WM_MOUSEWHEEL else hwnd
+                self._sender.send_mouse(target, msg_type,
                                         client_x, client_y, mouse_data)
                 self._events_sent += 1
 

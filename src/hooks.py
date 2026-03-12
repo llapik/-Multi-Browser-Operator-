@@ -17,10 +17,9 @@ from .winapi import (
     WM_QUIT,
     WM_MOUSEWHEEL,
     HIWORD,
+    LLMHF_INJECTED,
+    LLKHF_INJECTED,
 )
-
-# LLKHF_INJECTED flag — skip events injected by SendInput or other software
-LLKHF_INJECTED = 0x00000010
 
 # Callback signature: (msg_type, x, y, mouse_data) for mouse
 #                     (msg_type, vk_code, scan_code, flags) for keyboard
@@ -103,8 +102,9 @@ class InputHooks:
     def _mouse_callback(self, ncode, wparam, lparam):
         if ncode >= 0 and self.on_mouse is not None:
             data = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-            # Skip events injected by other software (LLKHF_INJECTED)
-            if not (data.flags & LLKHF_INJECTED):
+            # Skip events injected by other software.
+            # Mouse uses LLMHF_INJECTED (bit 0), NOT LLKHF_INJECTED (bit 4).
+            if not (data.flags & LLMHF_INJECTED):
                 mouse_data = HIWORD(data.mouseData) if wparam == WM_MOUSEWHEEL else 0
                 try:
                     self.on_mouse(wparam, data.pt.x, data.pt.y, mouse_data)

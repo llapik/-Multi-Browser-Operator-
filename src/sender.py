@@ -141,9 +141,13 @@ class InputSender:
         else:
             wparam = self._pressed
 
-        # Re-activate before every click/scroll so background Chrome windows
-        # process the event even when multiple slaves share one browser process.
-        if msg_type != WM_MOUSEMOVE:
+        # Ensure the target window processes this event even in the background.
+        # WM_MOUSEWHEEL is routed to the render widget (same as keyboard), so it
+        # needs WM_SETFOCUS for per-slave focus interleaving.
+        # Clicks go to the top-level HWND and need WM_ACTIVATE at that level.
+        if msg_type == WM_MOUSEWHEEL:
+            user32.PostMessageW(hwnd, WM_SETFOCUS, 0, 0)
+        elif msg_type != WM_MOUSEMOVE:
             user32.PostMessageW(hwnd, WM_ACTIVATE, WA_ACTIVE, 0)
 
         user32.PostMessageW(hwnd, msg_type, wparam, lparam)

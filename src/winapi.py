@@ -33,6 +33,13 @@ WA_ACTIVE = 1
 WH_MOUSE_LL = 14
 WH_KEYBOARD_LL = 13
 
+# Injected-event flags for low-level hook structs.
+# IMPORTANT: the bit positions differ between mouse and keyboard hooks.
+# Mouse (MSLLHOOKSTRUCT.flags):    LLMHF_INJECTED = bit 0 (0x01)
+# Keyboard (KBDLLHOOKSTRUCT.flags): LLKHF_INJECTED = bit 4 (0x10)
+LLMHF_INJECTED = 0x00000001   # mouse event injected via SendInput or similar
+LLKHF_INJECTED = 0x00000010   # keyboard event injected via SendInput or similar
+
 # --- Mouse event flags ---
 MK_LBUTTON = 0x0001
 MK_RBUTTON = 0x0002
