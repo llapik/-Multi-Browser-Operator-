@@ -27,6 +27,9 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QSpinBox,
     QLineEdit,
+    QDialog,
+    QDialogButtonBox,
+    QScrollArea,
 )
 
 from .engine import SyncEngine
@@ -317,6 +320,14 @@ class MainWindow(QMainWindow):
             btn_close.setEnabled(False)
             row_layout.addWidget(btn_close)
 
+            # Reset sessions button
+            btn_reset = QPushButton("🗑 Сессии...")
+            btn_reset.setToolTip("Сбросить сохранённые данные (куки, пароли) для выбранных аккаунтов")
+            btn_reset.setStyleSheet(
+                "QPushButton { padding: 4px 10px; border-radius: 4px; }"
+            )
+            row_layout.addWidget(btn_reset)
+
             # Status label
             lbl_status = QLabel("")
             lbl_status.setStyleSheet("color: #555; min-width: 70px;")
@@ -334,6 +345,7 @@ class MainWindow(QMainWindow):
                 "url": txt_url,
                 "btn_open": btn_open,
                 "btn_close": btn_close,
+                "btn_reset": btn_reset,
                 "lbl": lbl_status,
             }
             self._group_rows.append(widgets)
@@ -341,15 +353,13 @@ class MainWindow(QMainWindow):
             # Connect buttons (capture widgets dict by reference via default arg)
             btn_open.clicked.connect(lambda checked, w=widgets: self._open_group(w))
             btn_close.clicked.connect(lambda checked, w=widgets: self._close_group(w))
+            btn_reset.clicked.connect(lambda checked, w=widgets: self._reset_group_sessions(w))
 
         # Hint about profile location
         profiles_path = str(
             BrowserLauncher.profile_dir("Google Chrome", 1).parent.parent
         )
-        hint = QLabel(
-            f"Профили сохраняются в: {profiles_path}   "
-            "— удалите папку аккаунта чтобы сбросить сессию"
-        )
+        hint = QLabel(f"Профили: {profiles_path}")
         hint.setStyleSheet("color: #777; font-size: 11px;")
         outer.addWidget(hint)
 
@@ -387,6 +397,101 @@ class MainWindow(QMainWindow):
         w["btn_open"].setEnabled(True)
         w["btn_close"].setEnabled(False)
         w["lbl"].setText("Закрыто")
+
+    def _reset_group_sessions(self, w: dict) -> None:
+        """Show a dialog to selectively delete persistent profiles."""
+        browser = w["browser"].currentText()
+        start = w["start"].value()
+        end = w["end"].value()
+
+        if w["btn_close"].isEnabled():
+            QMessageBox.warning(
+                self, "Группа запущена",
+                "Сначала закройте браузеры группы, затем сбрасывайте сессии.\n"
+                "Сброс во время работы браузера может повредить профиль."
+            )
+            return
+
+        # Build dialog
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Сбросить сессии — {w['name'].text()}")
+        dlg.setMinimumWidth(340)
+        dlg_layout = QVBoxLayout(dlg)
+
+        dlg_layout.addWidget(QLabel(
+            "Выберите аккаунты для сброса.\n"
+            "Будут удалены все куки, пароли и история выбранных профилей."
+        ))
+
+        # Scrollable checkbox list
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(260)
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setSpacing(2)
+
+        checkboxes: list[tuple[int, QCheckBox]] = []
+        for idx in range(start, end + 1):
+            exists = BrowserLauncher.profile_exists(browser, idx)
+            chk = QCheckBox(
+                f"Аккаунт {idx:03d}"
+                + ("" if exists else "  (профиль не создан)")
+            )
+            chk.setEnabled(exists)
+            chk.setChecked(False)
+            inner_layout.addWidget(chk)
+            checkboxes.append((idx, chk))
+
+        scroll.setWidget(inner)
+        dlg_layout.addWidget(scroll)
+
+        # Select all / none row
+        sel_row = QHBoxLayout()
+        btn_all = QPushButton("Выбрать все")
+        btn_none = QPushButton("Снять все")
+        btn_all.clicked.connect(
+            lambda: [chk.setChecked(True) for _, chk in checkboxes if chk.isEnabled()]
+        )
+        btn_none.clicked.connect(
+            lambda: [chk.setChecked(False) for _, chk in checkboxes]
+        )
+        sel_row.addWidget(btn_all)
+        sel_row.addWidget(btn_none)
+        sel_row.addStretch()
+        dlg_layout.addLayout(sel_row)
+
+        # OK / Cancel
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        )
+        buttons.button(QDialogButtonBox.Ok).setText("Сбросить выбранные")
+        buttons.button(QDialogButtonBox.Ok).setStyleSheet(
+            "QPushButton { background-color: #c62828; color: white; "
+            "font-weight: bold; padding: 4px 14px; border-radius: 4px; }"
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        dlg_layout.addWidget(buttons)
+
+        if dlg.exec_() != QDialog.Accepted:
+            return
+
+        selected = [idx for idx, chk in checkboxes if chk.isChecked()]
+        if not selected:
+            return
+
+        deleted = 0
+        for idx in selected:
+            if BrowserLauncher.delete_profile(browser, idx):
+                deleted += 1
+
+        w["lbl"].setText(f"Сброшено: {deleted}")
+        QMessageBox.information(
+            self, "Готово",
+            f"Сброшено профилей: {deleted} из {len(selected)}.\n"
+            "При следующем открытии эти аккаунты потребуют повторного входа."
+        )
 
     def _save_groups_config(self) -> None:
         """Persist current group settings to config."""

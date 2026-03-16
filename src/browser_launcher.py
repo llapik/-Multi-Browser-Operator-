@@ -239,6 +239,27 @@ class BrowserLauncher:
                 pass
         self._group_procs.pop(group_id, None)
 
+    @staticmethod
+    def delete_profile(browser_name: str, account_index: int) -> bool:
+        """Delete the persistent profile directory for one account.
+
+        This wipes all cookies, saved passwords, and history for that account.
+        The browser must NOT be running when this is called, otherwise the
+        deletion may fail or corrupt the profile.
+
+        Returns True if the directory was deleted, False if it didn't exist.
+        """
+        d = BrowserLauncher.profile_dir(browser_name, account_index)
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
+            return True
+        return False
+
+    @staticmethod
+    def profile_exists(browser_name: str, account_index: int) -> bool:
+        """Return True if a persistent profile already exists for this account."""
+        return BrowserLauncher.profile_dir(browser_name, account_index).exists()
+
     def group_running_count(self, group_id: str) -> int:
         """Return number of still-running processes in the group."""
         return sum(
