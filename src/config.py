@@ -9,6 +9,11 @@ DEFAULT_CONFIG = {
     "scale_coordinates": False,
     "minimize_to_tray": True,
     "language": "ru",
+    # Each group: {name, browser, start, end, url}
+    "account_groups": [
+        {"name": "Группа 1", "browser": "", "start": 1,  "end": 11, "url": ""},
+        {"name": "Группа 2", "browser": "", "start": 12, "end": 22, "url": ""},
+    ],
 }
 
 CONFIG_FILENAME = "mbo_config.json"

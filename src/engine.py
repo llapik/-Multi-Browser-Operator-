@@ -264,8 +264,15 @@ class SyncEngine:
                 if user32.IsIconic(hwnd):
                     continue
                 sw, sh = get_client_size(hwnd)
-                # Mouse → top-level HWND, coordinates relative to its client area
-                self._sender.send_mouse(hwnd, msg_type,
+                if msg_type == WM_MOUSEWHEEL:
+                    # Activate top-level first, then scroll goes to render widget.
+                    # Chrome checks is_active_ (top-level flag) AND requires the
+                    # render widget to be focused — both must be set per-slave.
+                    user32.PostMessageW(hwnd, WM_ACTIVATE, WA_ACTIVE, 0)
+                    target = self._get_target(hwnd)
+                else:
+                    target = hwnd
+                self._sender.send_mouse(target, msg_type,
                                         int(rel_x * sw), int(rel_y * sh),
                                         mouse_data)
                 self._events_sent += 1
@@ -276,7 +283,12 @@ class SyncEngine:
                     continue
                 if user32.IsIconic(hwnd):
                     continue
-                self._sender.send_mouse(hwnd, msg_type,
+                if msg_type == WM_MOUSEWHEEL:
+                    user32.PostMessageW(hwnd, WM_ACTIVATE, WA_ACTIVE, 0)
+                    target = self._get_target(hwnd)
+                else:
+                    target = hwnd
+                self._sender.send_mouse(target, msg_type,
                                         client_x, client_y, mouse_data)
                 self._events_sent += 1
 
@@ -328,22 +340,21 @@ class SyncEngine:
     # ------------------------------------------------------------------
 
     def _activate_slaves(self, slaves: list) -> None:
-        """Tell each slave window to accept input as if it were focused.
+        """Initial activation of slave windows on master foreground transition.
 
-        Sends WM_ACTIVATE (makes Chrome set is_active_ = true) and
-        WM_SETFOCUS to the focused child (found via GetGUIThreadInfo).
-        Called once per master-foreground transition, not per event.
-        Schedules an async cache rebuild after activation so subsequent
-        keystrokes use freshly resolved child targets.
+        Sends WM_ACTIVATE(WA_ACTIVE) to each slave's top-level window so that
+        Chrome draws its title bar as active and initialises internal state.
+
+        Note: we intentionally do NOT send WM_SETFOCUS here.  Per-slave
+        WM_SETFOCUS is now sent by InputSender.send_key() immediately before
+        every WM_KEYDOWN in the message queue, which correctly handles the
+        case where multiple Chrome windows share one browser process / UI thread.
+        Sending WM_SETFOCUS in bulk here would leave only the last slave focused.
         """
         for hwnd in slaves:
             if not user32.IsWindow(hwnd) or user32.IsIconic(hwnd):
                 continue
-            # 1. Tell the top-level window it is being activated
             user32.PostMessageW(hwnd, WM_ACTIVATE, WA_ACTIVE, 0)
-            # 2. Tell the focused child it has keyboard focus (use cached target)
-            target = self._get_target(hwnd)
-            user32.PostMessageW(target, WM_SETFOCUS, 0, 0)
         # Rebuild cache ~500ms after activation to pick up newly focused children
         threading.Timer(0.5, self._rebuild_target_cache).start()
 
