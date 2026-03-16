@@ -125,8 +125,11 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(master_box)
 
-        # --- Browser launcher ---
+        # --- Browser launcher (incognito) ---
         layout.addWidget(self._build_launcher_box())
+
+        # --- Account groups (persistent sessions) ---
+        layout.addWidget(self._build_groups_box())
 
         # --- Window table ---
         table_box = QGroupBox("Окна (отметьте ведомые / Slaves)")
@@ -238,6 +241,166 @@ class MainWindow(QMainWindow):
         row2.addWidget(self._lbl_launcher)
 
         return box
+
+    def _build_groups_box(self) -> QGroupBox:
+        """Build the persistent-account-groups panel.
+
+        Each group has its own browser, account range, URL, and Open/Close
+        buttons.  Profiles are stored permanently in %APPDATA%\\MBO\\profiles
+        so logins survive between runs — no need to re-authenticate each time.
+        """
+        box = QGroupBox("Группы аккаунтов (постоянные сессии, без повторного входа)")
+        outer = QVBoxLayout(box)
+
+        browsers = BrowserLauncher.available_browsers()
+        groups_cfg = self._config.get("account_groups", [])
+
+        self._group_rows = []   # list of dicts with widgets per group
+
+        for i, gcfg in enumerate(groups_cfg):
+            row_layout = QHBoxLayout()
+
+            # Group name label
+            name_edit = QLineEdit(gcfg.get("name", f"Группа {i+1}"))
+            name_edit.setFixedWidth(90)
+            name_edit.setToolTip("Название группы")
+            row_layout.addWidget(name_edit)
+
+            # Browser selector
+            cmb = QComboBox()
+            cmb.setMinimumWidth(140)
+            if browsers:
+                cmb.addItems(browsers)
+                saved_browser = gcfg.get("browser", "")
+                if saved_browser in browsers:
+                    cmb.setCurrentText(saved_browser)
+            else:
+                cmb.addItem("Браузеры не найдены")
+                cmb.setEnabled(False)
+            row_layout.addWidget(cmb)
+
+            # Account range
+            row_layout.addWidget(QLabel("Аккаунты:"))
+            spn_start = QSpinBox()
+            spn_start.setRange(1, 999)
+            spn_start.setValue(gcfg.get("start", i * 11 + 1))
+            spn_start.setFixedWidth(55)
+            row_layout.addWidget(spn_start)
+
+            row_layout.addWidget(QLabel("—"))
+
+            spn_end = QSpinBox()
+            spn_end.setRange(1, 999)
+            spn_end.setValue(gcfg.get("end", i * 11 + 11))
+            spn_end.setFixedWidth(55)
+            row_layout.addWidget(spn_end)
+
+            # URL
+            txt_url = QLineEdit(gcfg.get("url", ""))
+            txt_url.setPlaceholderText("URL (необязательно)")
+            row_layout.addWidget(txt_url, 1)
+
+            # Open button
+            btn_open = QPushButton("▶ Открыть")
+            btn_open.setStyleSheet(
+                "QPushButton { background-color: #2E7D32; color: white; "
+                "font-weight: bold; padding: 4px 12px; border-radius: 4px; }"
+                "QPushButton:hover { background-color: #388E3C; }"
+                "QPushButton:disabled { background-color: #90A4AE; }"
+            )
+            if not browsers:
+                btn_open.setEnabled(False)
+            row_layout.addWidget(btn_open)
+
+            # Close button
+            btn_close = QPushButton("■ Закрыть")
+            btn_close.setEnabled(False)
+            row_layout.addWidget(btn_close)
+
+            # Status label
+            lbl_status = QLabel("")
+            lbl_status.setStyleSheet("color: #555; min-width: 70px;")
+            row_layout.addWidget(lbl_status)
+
+            outer.addLayout(row_layout)
+
+            group_id = str(i)
+            widgets = {
+                "id": group_id,
+                "name": name_edit,
+                "browser": cmb,
+                "start": spn_start,
+                "end": spn_end,
+                "url": txt_url,
+                "btn_open": btn_open,
+                "btn_close": btn_close,
+                "lbl": lbl_status,
+            }
+            self._group_rows.append(widgets)
+
+            # Connect buttons (capture widgets dict by reference via default arg)
+            btn_open.clicked.connect(lambda checked, w=widgets: self._open_group(w))
+            btn_close.clicked.connect(lambda checked, w=widgets: self._close_group(w))
+
+        # Hint about profile location
+        profiles_path = str(
+            BrowserLauncher.profile_dir("Google Chrome", 1).parent.parent
+        )
+        hint = QLabel(
+            f"Профили сохраняются в: {profiles_path}   "
+            "— удалите папку аккаунта чтобы сбросить сессию"
+        )
+        hint.setStyleSheet("color: #777; font-size: 11px;")
+        outer.addWidget(hint)
+
+        return box
+
+    def _open_group(self, w: dict) -> None:
+        """Launch all accounts in a group with persistent sessions."""
+        browser = w["browser"].currentText()
+        start = w["start"].value()
+        end = w["end"].value()
+        url = w["url"].text().strip()
+        group_id = w["id"]
+
+        if start > end:
+            QMessageBox.warning(self, "Ошибка", "Начальный номер должен быть ≤ конечного.")
+            return
+
+        indices = list(range(start, end + 1))
+        launched = self._launcher.launch_group(group_id, browser, indices, url)
+        if launched == 0:
+            QMessageBox.warning(self, "Ошибка",
+                f"Не удалось запустить «{browser}».\nПроверьте, установлен ли браузер.")
+            return
+
+        w["btn_open"].setEnabled(False)
+        w["btn_close"].setEnabled(True)
+        w["lbl"].setText(f"Открыто: {launched}")
+        self._save_groups_config()
+        # Refresh window list after browsers open
+        QTimer.singleShot(3000, self._refresh_windows)
+
+    def _close_group(self, w: dict) -> None:
+        """Close all browsers in a group."""
+        self._launcher.close_group(w["id"])
+        w["btn_open"].setEnabled(True)
+        w["btn_close"].setEnabled(False)
+        w["lbl"].setText("Закрыто")
+
+    def _save_groups_config(self) -> None:
+        """Persist current group settings to config."""
+        groups = []
+        for w in getattr(self, "_group_rows", []):
+            groups.append({
+                "name":    w["name"].text(),
+                "browser": w["browser"].currentText(),
+                "start":   w["start"].value(),
+                "end":     w["end"].value(),
+                "url":     w["url"].text().strip(),
+            })
+        self._config["account_groups"] = groups
+        save_config(self._config)
 
     def _init_tray(self):
         self._tray = QSystemTrayIcon(_create_icon(), self)
@@ -502,6 +665,7 @@ class MainWindow(QMainWindow):
     def _quit(self):
         self._engine.stop()
         self._launcher.close_all()
+        self._save_groups_config()
         save_config(self._config)
         self._tray.hide()
         QApplication.quit()

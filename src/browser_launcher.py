@@ -1,8 +1,15 @@
-"""Launch multiple independent incognito browser instances with separate sessions.
+"""Launch multiple independent browser instances with separate sessions.
 
-Each instance gets its own --user-data-dir (Chrome/Edge/Brave/Opera) or
---profile (Firefox), stored under %TEMP%\mbo_sessions\.  This guarantees
-that cookies, logins, and localStorage are fully isolated between instances.
+Two launch modes:
+
+Incognito mode (launch):
+  Temporary profiles under %TEMP%\mbo_sessions\<browser>_NNN.
+  Each run starts fresh — no saved logins or cookies.
+
+Persistent mode (launch_group):
+  Profiles stored permanently under %APPDATA%\MBO\profiles\<browser>\account_NNN.
+  Cookies and logins survive between app restarts — no need to re-authenticate.
+  Used for the "account groups" feature where each profile belongs to one account.
 """
 
 import os
@@ -11,8 +18,11 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-# Base directory for all session profiles
+# Temporary sessions (incognito launcher)
 _SESSIONS_BASE = Path(os.environ.get("TEMP", "C:/Temp")) / "mbo_sessions"
+
+# Persistent account profiles — survive between app restarts
+_PROFILES_BASE = Path(os.environ.get("APPDATA", "C:/Users/User/AppData/Roaming")) / "MBO" / "profiles"
 
 # Supported browsers: name → configuration dict
 #   exes      - candidate executable paths (first found wins)
@@ -77,11 +87,17 @@ _BROWSERS: dict = {
 
 
 class BrowserLauncher:
-    """Launch and track independent incognito browser instances."""
+    """Launch and track independent browser instances.
+
+    Supports two modes:
+    - Incognito (launch): temporary %TEMP% profiles, fresh session each run.
+    - Persistent (launch_group): permanent %APPDATA% profiles, saved logins.
+    """
 
     def __init__(self):
-        self._processes: list = []
-        self._session_dirs: list = []
+        self._processes: list = []           # incognito launcher processes
+        self._session_dirs: list = []        # incognito temp dirs
+        self._group_procs: dict = {}         # group_id → list[subprocess.Popen]
 
     # ------------------------------------------------------------------
     # Static helpers
@@ -159,6 +175,78 @@ class BrowserLauncher:
         return launched
 
     # ------------------------------------------------------------------
+    # Persistent account groups
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def profile_dir(browser_name: str, account_index: int) -> Path:
+        """Return the persistent profile directory for an account.
+
+        The directory is created on first use and survives between runs,
+        preserving cookies, logins, and localStorage.
+        """
+        slug = browser_name.lower().replace(" ", "_")
+        return _PROFILES_BASE / slug / f"account_{account_index:03d}"
+
+    def launch_group(self, group_id: str, browser_name: str,
+                     account_indices: list, url: str = "") -> int:
+        """Open browser windows for the given account indices with saved sessions.
+
+        Unlike launch(), this does NOT use incognito mode, so each account's
+        cookies and passwords persist between runs.  Profiles are stored in
+        %APPDATA%\\MBO\\profiles\\<browser>\\account_NNN.
+
+        Args:
+            group_id:        Unique identifier string for this group (e.g. "1").
+            browser_name:    Browser key (e.g. "Google Chrome").
+            account_indices: List of account numbers to open (e.g. [1, 2, ..., 11]).
+            url:             Optional URL to open in each window.
+
+        Returns:
+            Number of processes actually started.
+        """
+        cfg = _BROWSERS.get(browser_name)
+        exe = self.find_exe(browser_name)
+        if not cfg or not exe:
+            return 0
+
+        procs = []
+        for idx in account_indices:
+            profile = self.profile_dir(browser_name, idx)
+            profile.mkdir(parents=True, exist_ok=True)
+
+            cmd = [exe, f"{cfg['profile']}={profile}"]
+            cmd.extend(cfg["extra"])
+            # No --incognito / --private flag — we want persistent sessions
+            if url:
+                cmd.append(url)
+
+            try:
+                proc = subprocess.Popen(cmd)
+                procs.append(proc)
+            except OSError:
+                pass
+
+        self._group_procs[group_id] = procs
+        return len(procs)
+
+    def close_group(self, group_id: str) -> None:
+        """Terminate all browser windows that belong to group_id."""
+        for proc in self._group_procs.get(group_id, []):
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+        self._group_procs.pop(group_id, None)
+
+    def group_running_count(self, group_id: str) -> int:
+        """Return number of still-running processes in the group."""
+        return sum(
+            1 for p in self._group_procs.get(group_id, [])
+            if p.poll() is None
+        )
+
+    # ------------------------------------------------------------------
     # Management
     # ------------------------------------------------------------------
 
@@ -173,7 +261,7 @@ class BrowserLauncher:
         return len(self._processes)
 
     def close_all(self):
-        """Terminate all launched browser processes."""
+        """Terminate all launched browser processes (incognito launcher only)."""
         for proc in self._processes:
             try:
                 proc.terminate()

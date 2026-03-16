@@ -264,8 +264,14 @@ class SyncEngine:
                 if user32.IsIconic(hwnd):
                     continue
                 sw, sh = get_client_size(hwnd)
-                # Scroll → render widget (same as keyboard); other mouse → top-level
-                target = self._get_target(hwnd) if msg_type == WM_MOUSEWHEEL else hwnd
+                if msg_type == WM_MOUSEWHEEL:
+                    # Activate top-level first, then scroll goes to render widget.
+                    # Chrome checks is_active_ (top-level flag) AND requires the
+                    # render widget to be focused — both must be set per-slave.
+                    user32.PostMessageW(hwnd, WM_ACTIVATE, WA_ACTIVE, 0)
+                    target = self._get_target(hwnd)
+                else:
+                    target = hwnd
                 self._sender.send_mouse(target, msg_type,
                                         int(rel_x * sw), int(rel_y * sh),
                                         mouse_data)
@@ -277,8 +283,11 @@ class SyncEngine:
                     continue
                 if user32.IsIconic(hwnd):
                     continue
-                # Scroll → render widget (same as keyboard); other mouse → top-level
-                target = self._get_target(hwnd) if msg_type == WM_MOUSEWHEEL else hwnd
+                if msg_type == WM_MOUSEWHEEL:
+                    user32.PostMessageW(hwnd, WM_ACTIVATE, WA_ACTIVE, 0)
+                    target = self._get_target(hwnd)
+                else:
+                    target = hwnd
                 self._sender.send_mouse(target, msg_type,
                                         client_x, client_y, mouse_data)
                 self._events_sent += 1
